@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     private lateinit var btnSelectFolder: Button
     private lateinit var btnClearSelection: Button
     private lateinit var btnSetExifDate: Button
+    private lateinit var btnPngToJpg: Button
     
     private var progressDialog: AlertDialog? = null
     private var pendingDate: Date? = null
@@ -86,6 +87,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         btnSelectFolder = findViewById(R.id.btn_select_folder)
         btnClearSelection = findViewById(R.id.btn_clear_selection)
         btnSetExifDate = findViewById(R.id.btn_set_exif_date)
+        btnPngToJpg = findViewById(R.id.btn_png_to_jpg)
         
         imageAdapter = SelectedImageAdapter(selectedImages, this)
         imageAdapter.onItemRemoved = { updateSelectionCount() }
@@ -109,6 +111,17 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         btnSetExifDate.setOnClickListener {
             showDatePickerDialog()
         }
+
+        btnPngToJpg.setOnClickListener {
+            // Let user pick only PNG images, then convert them to JPG in-place (same folders)
+            imagePickerManager.pickMultipleImages(arrayOf("image/png")) { pngUris ->
+                if (pngUris.isEmpty()) {
+                    Toast.makeText(this, "No PNG images selected", Toast.LENGTH_SHORT).show()
+                    return@pickMultipleImages
+                }
+                startPngToJpgConversion(pngUris)
+            }
+        }
     }
     
     private fun requestStoragePermissions() {
@@ -118,6 +131,64 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         } else {
             onPermissionsGranted()
         }
+    }
+
+    private fun startPngToJpgConversion(pngUris: List<Uri>) {
+        val converter = PngToJpgConverter(this, pngUris)
+
+        // Show progress dialog
+        val progressView = layoutInflater.inflate(R.layout.dialog_progress, null)
+        val progressBar = progressView.findViewById<ProgressBar>(R.id.progress_bar)
+        val tvProgressText = progressView.findViewById<TextView>(R.id.tv_progress_text)
+        val tvCurrentFile = progressView.findViewById<TextView>(R.id.tv_current_file)
+
+        progressBar.max = pngUris.size
+
+        progressDialog = AlertDialog.Builder(this)
+            .setTitle("Converting PNG to JPG...")
+            .setView(progressView)
+            .setCancelable(false)
+            .show()
+
+        converter.onProgress = { current, total, fileName ->
+            progressBar.progress = current
+            tvProgressText.text = "$current / $total"
+            tvCurrentFile.text = fileName
+        }
+
+        converter.onComplete = { result ->
+            progressDialog?.dismiss()
+            showConversionResultDialog(result)
+        }
+
+        converter.convertAll()
+    }
+
+    private fun showConversionResultDialog(result: BatchOperationResult) {
+        val resultView = layoutInflater.inflate(R.layout.dialog_result, null)
+        val tvResultSummary = resultView.findViewById<TextView>(R.id.tv_result_summary)
+        val tvSuccessCount = resultView.findViewById<TextView>(R.id.tv_success_count)
+        val tvFailureCount = resultView.findViewById<TextView>(R.id.tv_failure_count)
+        val tvErrorDetails = resultView.findViewById<TextView>(R.id.tv_error_details)
+
+        tvResultSummary.text = "PNG → JPG Conversion Complete"
+        tvSuccessCount.text = "${result.successCount}"
+        tvFailureCount.text = "${result.failureCount}"
+
+        val errorText = if (result.errorMessages.isNotEmpty()) {
+            result.errorMessages.entries.joinToString("\n") { (file, error) ->
+                "• $file: $error"
+            }
+        } else {
+            ""
+        }
+        tvErrorDetails.text = errorText
+
+        AlertDialog.Builder(this)
+            .setTitle("Result")
+            .setView(resultView)
+            .setPositiveButton("OK", null)
+            .show()
     }
     
     private fun onPermissionsGranted() {

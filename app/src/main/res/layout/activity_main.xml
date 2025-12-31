@@ -33,6 +33,13 @@
         android:layout_marginTop="8dp"
         android:text="Clear Selection" />
 
+    <Button
+        android:id="@+id/btn_png_to_jpg"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="PNG -> JPG" />
+
     <TextView
         android:id="@+id/tv_selected_count"
         android:layout_width="match_parent"

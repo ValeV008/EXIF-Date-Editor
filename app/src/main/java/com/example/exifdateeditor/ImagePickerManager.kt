@@ -7,6 +7,7 @@ import androidx.activity.result.ActivityResultRegistry
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import java.util.Locale
 
 /**
  * Manages image selection using Storage Access Framework (SAF)
@@ -18,6 +19,8 @@ class ImagePickerManager(
 ) : DefaultLifecycleObserver {
     
     var onImagesSelected: (List<Uri>) -> Unit = {}
+    private var pendingCallback: ((List<Uri>) -> Unit)? = null
+    private var pendingMimeTypesFilter: Array<String>? = null
     
     private val selectMultipleImages = registry.register(
         "select_multiple_images",
@@ -25,7 +28,15 @@ class ImagePickerManager(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         // Persist read/write access where possible (SAF)
-        val filtered = uris.filter { isImageFile(it) }
+        val accepted = pendingMimeTypesFilter ?: arrayOf("image/*")
+        val filtered = uris.filter { uri ->
+            try {
+                val mimeType = context.contentResolver.getType(uri)
+                matchesMimeTypes(mimeType, accepted)
+            } catch (_: Exception) {
+                false
+            }
+        }
         filtered.forEach { uri ->
             try {
                 val takeFlags =
@@ -36,7 +47,14 @@ class ImagePickerManager(
                 // Ignore; some providers won't grant write persist here
             }
         }
-        onImagesSelected(filtered)
+        val cb = pendingCallback
+        pendingCallback = null
+        pendingMimeTypesFilter = null
+        if (cb != null) {
+            cb.invoke(filtered)
+        } else {
+            onImagesSelected(filtered)
+        }
     }
     
     private val selectSingleImage = registry.register(
@@ -61,7 +79,17 @@ class ImagePickerManager(
      * Open picker for multiple images
      */
     fun pickMultipleImages() {
+        pendingMimeTypesFilter = arrayOf("image/*")
         selectMultipleImages.launch(arrayOf("image/*"))
+    }
+    
+    /**
+     * Open picker for multiple images with custom MIME type filters and optional one-shot callback
+     */
+    fun pickMultipleImages(mimeTypes: Array<String>, callback: ((List<Uri>) -> Unit)? = null) {
+        pendingCallback = callback
+        pendingMimeTypesFilter = mimeTypes
+        selectMultipleImages.launch(mimeTypes)
     }
     
     /**
@@ -80,6 +108,21 @@ class ImagePickerManager(
             mimeType?.startsWith("image/") ?: false
         } catch (e: Exception) {
             false
+        }
+    }
+
+    private fun matchesMimeTypes(mimeType: String?, accepted: Array<String>): Boolean {
+        if (mimeType.isNullOrEmpty()) return false
+        return accepted.any { pattern ->
+            val p = pattern.lowercase(Locale.ROOT)
+            val m = mimeType.lowercase(Locale.ROOT)
+            if (p.endsWith("/*")) {
+                // Wildcard major type match, e.g., image/*
+                val major = p.substringBefore('/')
+                m.substringBefore('/') == major
+            } else {
+                m == p
+            }
         }
     }
     
