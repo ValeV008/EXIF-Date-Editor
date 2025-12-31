@@ -60,9 +60,6 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         
         // Request permissions on app start
         requestStoragePermissions()
-        
-        // Restore persistent folder access if available
-        folderPickerManager.restoreLastFolderAccess()
     }
     
     private fun initializeViews() {

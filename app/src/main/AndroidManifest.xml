@@ -1,13 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.exifdateeditor">
 
-    <!-- Permissions for storage access -->
+    <!-- Permissions for storage access (Android 10) -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
-        android:requestLegacyExternalStorage="true"
         android:label="Exif Date Editor"
         android:theme="@style/Theme.ExifDateEditor">
         <activity
@@ -19,4 +18,5 @@
             </intent-filter>
         </activity>
     </application>
+
 </manifest>

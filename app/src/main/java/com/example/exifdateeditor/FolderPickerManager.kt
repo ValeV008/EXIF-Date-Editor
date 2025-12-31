@@ -1,16 +1,18 @@
 package com.example.exifdateeditor
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.result.ActivityResultRegistry
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import java.io.File
 
 /**
  * Manages folder selection and image extraction using Storage Access Framework (SAF)
- * with persistent URI permissions
+ * Persists folder access permissions so user doesn't get prompted repeatedly
  */
 class FolderPickerManager(
     private val context: Context,
@@ -18,37 +20,46 @@ class FolderPickerManager(
     lifecycleOwner: LifecycleOwner
 ) : DefaultLifecycleObserver {
     
-    private companion object {
-        private const val PREFS_NAME = "folder_picker_prefs"
-        private const val PREF_FOLDER_URI = "last_folder_uri"
-    }
-    
     var onImagesFound: (List<Uri>) -> Unit = {}
     
+    // SAF folder picker
     private val selectFolder = registry.register(
         "select_folder",
         lifecycleOwner,
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            // Persist the URI permission so it works next time
+            // Persist the folder access permission
             persistFolderAccess(uri)
-            val images = extractImagesFromFolder(uri)
+            val images = extractImagesFromFolderUri(uri)
             onImagesFound(images)
         }
     }
     
     /**
-     * Open folder picker dialog
+     * Open folder selection dialog
      */
     fun pickFolder() {
         selectFolder.launch(null)
     }
     
     /**
-     * Extract all image URIs from first level of selected folder
+     * Persist folder access permission so it remains valid across app sessions
      */
-    private fun extractImagesFromFolder(folderUri: Uri): List<Uri> {
+    private fun persistFolderAccess(folderUri: Uri) {
+        try {
+            // Take persistable URI permission for read and write access
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            context.contentResolver.takePersistableUriPermission(folderUri, takeFlags)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    
+    /**
+     * Extract all image URIs from a folder using SAF
+     */
+    private fun extractImagesFromFolderUri(folderUri: Uri): List<Uri> {
         val images = mutableListOf<Uri>()
         
         return try {
@@ -92,7 +103,6 @@ class FolderPickerManager(
                             images.add(documentUri)
                         }
                     } catch (e: Exception) {
-                        // Skip problematic files
                         continue
                     }
                 }
@@ -100,9 +110,43 @@ class FolderPickerManager(
             
             images
         } catch (e: Exception) {
-            // Return empty list if folder traversal fails
             emptyList()
         }
+    }
+    
+    /**
+     * Extract image URIs from a file system path
+     */
+    fun extractImagesFromPath(path: String): List<Uri> {
+        val images = mutableListOf<Uri>()
+        
+        return try {
+            val folder = File(path)
+            if (!folder.exists() || !folder.isDirectory) {
+                return emptyList()
+            }
+            
+            // Get all image files from the folder (non-recursive)
+            folder.listFiles()?.forEach { file ->
+                if (file.isFile && isImageFile(file)) {
+                    val uri = Uri.fromFile(file)
+                    images.add(uri)
+                }
+            }
+            
+            images
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+    
+    /**
+     * Check if a file is an image based on extension
+     */
+    private fun isImageFile(file: File): Boolean {
+        val imageExtensions = setOf("jpg", "jpeg", "png", "gif", "bmp", "webp", "raw", "heic")
+        val extension = file.extension.lowercase()
+        return extension in imageExtensions
     }
     
     /**
@@ -110,19 +154,20 @@ class FolderPickerManager(
      */
     fun getImageName(uri: Uri): String {
         return try {
-            val cursor = context.contentResolver.query(uri, null, null, null, null)
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val nameIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                    if (nameIndex >= 0) {
-                        return@use it.getString(nameIndex)
-                    } else {
-                        null
+            if (uri.scheme == "file") {
+                File(uri.path ?: return uri.lastPathSegment ?: "Unknown").name
+            } else {
+                val cursor = context.contentResolver.query(uri, null, null, null, null)
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val nameIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                        if (nameIndex >= 0) {
+                            return@use it.getString(nameIndex)
+                        }
                     }
-                } else {
                     null
-                }
-            } ?: (uri.lastPathSegment ?: "Unknown")
+                } ?: (uri.lastPathSegment ?: "Unknown")
+            }
         } catch (e: Exception) {
             uri.lastPathSegment ?: "Unknown"
         }
@@ -133,87 +178,22 @@ class FolderPickerManager(
      */
     fun getImageSize(uri: Uri): Long {
         return try {
-            val cursor = context.contentResolver.query(uri, null, null, null, null)
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val sizeIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-                    if (sizeIndex >= 0) {
-                        return@use it.getLong(sizeIndex)
-                    } else {
-                        null
+            if (uri.scheme == "file") {
+                File(uri.path ?: return 0L).length()
+            } else {
+                val cursor = context.contentResolver.query(uri, null, null, null, null)
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val sizeIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                        if (sizeIndex >= 0) {
+                            return@use it.getLong(sizeIndex)
+                        }
                     }
-                } else {
                     null
-                }
-            } ?: 0L
+                } ?: 0L
+            }
         } catch (e: Exception) {
             0L
         }
     }
-    
-    /**
-     * Persist folder access permission so it remains valid across app sessions
-     */
-    private fun persistFolderAccess(folderUri: Uri) {
-        try {
-            // Take persistable URI permission for read access
-            val takeFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or 
-                           android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            context.contentResolver.takePersistableUriPermission(folderUri, takeFlags)
-            
-            // Save the URI to SharedPreferences for reference
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit().putString(PREF_FOLDER_URI, folderUri.toString()).apply()
-        } catch (e: Exception) {
-            // Log but don't fail if persistence doesn't work (e.g., on some older devices)
-            e.printStackTrace()
-        }
-    }
-    
-    /**
-     * Get the last used folder URI if permission is still valid
-     */
-    fun getLastFolderUri(): Uri? {
-        return try {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val uriString = prefs.getString(PREF_FOLDER_URI, null) ?: return null
-            Uri.parse(uriString)
-        } catch (e: Exception) {
-            null
-        }
-    }
-    
-    /**
-     * Check if we have persistent access to a folder URI
-     */
-    fun hasPersistentFolderAccess(folderUri: Uri): Boolean {
-        return try {
-            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-                folderUri,
-                DocumentsContract.getTreeDocumentId(folderUri)
-            )
-            val cursor = context.contentResolver.query(
-                childrenUri,
-                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
-                null,
-                null,
-                null
-            )
-            cursor?.use { it.count >= 0 } ?: false
-        } catch (e: Exception) {
-            false
-        }
-    }
-    
-    /**
-     * Restore access to the last used folder
-     */
-    fun restoreLastFolderAccess() {
-        val lastUri = getLastFolderUri()
-        if (lastUri != null && hasPersistentFolderAccess(lastUri)) {
-            val images = extractImagesFromFolder(lastUri)
-            if (images.isNotEmpty()) {
-                onImagesFound(images)
-            }
-        }
-    }
+}
