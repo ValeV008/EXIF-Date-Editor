@@ -24,7 +24,19 @@ class ImagePickerManager(
         lifecycleOwner,
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        onImagesSelected(uris.filter { isImageFile(it) })
+        // Persist read/write access where possible (SAF)
+        val filtered = uris.filter { isImageFile(it) }
+        filtered.forEach { uri ->
+            try {
+                val takeFlags =
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (_: Exception) {
+                // Ignore; some providers won't grant write persist here
+            }
+        }
+        onImagesSelected(filtered)
     }
     
     private val selectSingleImage = registry.register(
@@ -33,6 +45,14 @@ class ImagePickerManager(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null && isImageFile(uri)) {
+            try {
+                val takeFlags =
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (_: Exception) {
+                // Ignore
+            }
             onImagesSelected(listOf(uri))
         }
     }

@@ -2,6 +2,8 @@ package com.example.exifdateeditor
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.os.ParcelFileDescriptor
 import androidx.exifinterface.media.ExifInterface
 import java.io.File
 import java.io.InputStream
@@ -69,32 +71,43 @@ object ExifManager {
         return try {
             val dateString = dateFormatter.format(date)
             
-            // Create a temporary file to work with
-            val tempFile = File.createTempFile("exif_temp", ".jpg", context.cacheDir)
-            
+            // Prefer direct update via a read-write file descriptor when possible
             try {
-                // Copy image data from URI to temp file
-                val inputStream = context.contentResolver.openInputStream(imageUri)
-                inputStream?.use { input ->
-                    tempFile.outputStream().use { output ->
-                        input.copyTo(output)
+                val pfd: ParcelFileDescriptor? =
+                    context.contentResolver.openFileDescriptor(imageUri, "rw")
+                if (pfd != null) {
+                    pfd.use { fd ->
+                        val exifInterface = ExifInterface(fd.fileDescriptor)
+                        exifInterface.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, dateString)
+                        exifInterface.setAttribute(ExifInterface.TAG_DATETIME, dateString)
+                        exifInterface.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, dateString)
+                        exifInterface.saveAttributes()
+                        return true
                     }
                 }
-                
-                // Modify EXIF data in temp file
+            } catch (se: SecurityException) {
+                // Lacks write permission to the content Uri; fall back below
+            } catch (e: Exception) {
+                // Fall back to temp-file strategy
+            }
+
+            // Fallback: temp-file copy, then overwrite via output stream (requires write access)
+            val tempFile = File.createTempFile("exif_temp", ".jpg", context.cacheDir)
+            try {
+                context.contentResolver.openInputStream(imageUri)?.use { input ->
+                    tempFile.outputStream().use { output -> input.copyTo(output) }
+                }
+
                 val exifInterface = ExifInterface(tempFile.absolutePath)
                 exifInterface.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, dateString)
                 exifInterface.setAttribute(ExifInterface.TAG_DATETIME, dateString)
                 exifInterface.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, dateString)
                 exifInterface.saveAttributes()
-                
-                // Copy modified file back to original URI
-                tempFile.inputStream().use { input ->
-                    context.contentResolver.openOutputStream(imageUri)?.use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                
+
+                context.contentResolver.openOutputStream(imageUri)?.use { output ->
+                    tempFile.inputStream().use { input -> input.copyTo(output) }
+                } ?: return false
+
                 true
             } finally {
                 tempFile.delete()

@@ -34,6 +34,7 @@ app/build/
 # APKs and generated packages
 *.apk
 *.ap_
+*.aab
 
 # NDK
 obj/
@@ -51,3 +52,6 @@ desktop.ini
 
 # Misc
 *.hprof
+
+# Release artifacts
+app/release/

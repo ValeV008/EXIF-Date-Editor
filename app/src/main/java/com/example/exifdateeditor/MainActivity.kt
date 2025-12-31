@@ -1,6 +1,10 @@
 package com.example.exifdateeditor
 
+import android.app.Activity
+import android.content.IntentSender
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import android.os.Bundle
 import android.widget.Button
 import android.widget.ProgressBar
@@ -46,6 +50,19 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     private lateinit var btnSetExifDate: Button
     
     private var progressDialog: AlertDialog? = null
+    private var pendingDate: Date? = null
+
+    private val writeAccessLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val date = pendingDate
+        pendingDate = null
+        if (result.resultCode == Activity.RESULT_OK && date != null) {
+            proceedWithBatch(date)
+        } else {
+            Toast.makeText(this, "Write permission not granted", Toast.LENGTH_LONG).show()
+        }
+    }
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -127,10 +144,26 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     }
     
     override fun onDateTimeSelected(date: Date) {
-        startBatchExifProcessing(date)
+        // On Android 11+ request user consent to edit media items if needed
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val mediaUris = selectedImages.filter { it.scheme == "content" }
+                if (mediaUris.isNotEmpty()) {
+                    val pi = MediaStore.createWriteRequest(contentResolver, mediaUris)
+                    pendingDate = date
+                    writeAccessLauncher.launch(
+                        androidx.activity.result.IntentSenderRequest.Builder(pi.intentSender).build()
+                    )
+                    return
+                }
+            } catch (_: Exception) {
+                // If building the request fails, just proceed; we'll try writing and handle failures
+            }
+        }
+        proceedWithBatch(date)
     }
     
-    private fun startBatchExifProcessing(date: Date) {
+    private fun proceedWithBatch(date: Date) {
         val processor = BatchExifProcessor(this, selectedImages.toList())
         
         // Show progress dialog
