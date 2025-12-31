@@ -20,6 +20,9 @@ class SelectedImageAdapter(
     private val imageNames = mutableMapOf<Uri, String>()
     private val imageSizes = mutableMapOf<Uri, Long>()
     
+    // Notify host when an item is removed so it can update UI state
+    var onItemRemoved: (() -> Unit)? = null
+    
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ImageViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_selected_image, parent, false)
@@ -28,11 +31,8 @@ class SelectedImageAdapter(
     
     override fun onBindViewHolder(holder: ImageViewHolder, position: Int) {
         val uri = images[position]
-        holder.bind(uri) {
-            images.removeAt(position)
-            imageNames.remove(uri)
-            imageSizes.remove(uri)
-            notifyItemRemoved(position)
+        holder.bind(uri) { currentPosition ->
+            removeAt(currentPosition)
         }
     }
     
@@ -43,13 +43,27 @@ class SelectedImageAdapter(
         imageSizes[uri] = size
     }
     
+    fun removeAt(position: Int) {
+        if (position < 0 || position >= images.size) return
+        val uri = images[position]
+        images.removeAt(position)
+        imageNames.remove(uri)
+        imageSizes.remove(uri)
+        notifyItemRemoved(position)
+        // Rebind subsequent items so their positions are correct
+        if (position < images.size) {
+            notifyItemRangeChanged(position, images.size - position)
+        }
+        onItemRemoved?.invoke()
+    }
+    
     class ImageViewHolder(itemView: View, private val context: Context) : RecyclerView.ViewHolder(itemView) {
         private val tvImageName: TextView = itemView.findViewById(R.id.tv_image_name)
         private val tvImageSize: TextView = itemView.findViewById(R.id.tv_image_size)
         private val tvDateTaken: TextView = itemView.findViewById(R.id.tv_date_taken)
         private val btnRemove: ImageButton = itemView.findViewById(R.id.btn_remove_image)
         
-        fun bind(uri: Uri, onRemove: () -> Unit) {
+        fun bind(uri: Uri, onRemoveAt: (Int) -> Unit) {
             // Get filename from URI
             val fileName = try {
                 val cursor = context.contentResolver.query(uri, null, null, null, null)
@@ -83,7 +97,10 @@ class SelectedImageAdapter(
             tvDateTaken.text = "Date taken: $dateTakenFormatted"
             
             btnRemove.setOnClickListener {
-                onRemove()
+                val pos = bindingAdapterPosition
+                if (pos != RecyclerView.NO_POSITION) {
+                    onRemoveAt(pos)
+                }
             }
         }
         

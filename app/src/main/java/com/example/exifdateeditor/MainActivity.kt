@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         btnSetExifDate = findViewById(R.id.btn_set_exif_date)
         
         imageAdapter = SelectedImageAdapter(selectedImages, this)
+        imageAdapter.onItemRemoved = { updateSelectionCount() }
         rvSelectedImages.layoutManager = LinearLayoutManager(this)
         rvSelectedImages.adapter = imageAdapter
         
