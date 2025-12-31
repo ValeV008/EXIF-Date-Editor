@@ -1,0 +1,29 @@
+R_DEF: Internal format may change without notice
+local
+color material_blue_grey_50
+color material_blue_grey_600
+color material_blue_grey_800
+id btn_clear_selection
+id btn_remove_image
+id btn_select_folder
+id btn_select_images
+id btn_set_exif_date
+id progress_bar
+id rv_selected_images
+id tv_current_file
+id tv_date_taken
+id tv_error_details
+id tv_failure_count
+id tv_image_name
+id tv_image_size
+id tv_progress_text
+id tv_result_summary
+id tv_selected_count
+id tv_success_count
+layout activity_main
+layout dialog_progress
+layout dialog_result
+layout item_selected_image
+style ThemeOverlay.MaterialCalendar
+style Theme.ExifDateEditor
+style Theme.Material3.DayNight.NoActionBar
