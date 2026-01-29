@@ -3,10 +3,11 @@ package com.example.exifdateeditor
 import android.content.Context
 import android.content.ContentValues
 import android.net.Uri
-import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.media.MediaScannerConnection
+import android.content.ContentUris
+import java.io.FileNotFoundException
 import androidx.exifinterface.media.ExifInterface
 import java.io.File
 import java.io.InputStream
@@ -258,6 +259,59 @@ object ExifManager {
             result
         } catch (e: Exception) {
             result
+        }
+    }
+
+    /**
+     * Find MediaStore image entries for the selected filenames that no longer resolve to a file.
+     * Returns a list of stale MediaStore item URIs.
+     */
+    fun findStaleMediaEntries(context: Context, imageUris: List<Uri>): List<Uri> {
+        val displayNames = imageUris.mapNotNull { getDisplayName(context, it) }.toSet()
+        if (displayNames.isEmpty()) return emptyList()
+
+        val stale = mutableListOf<Uri>()
+        val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DISPLAY_NAME
+        )
+
+        for (name in displayNames) {
+            val selection = "${MediaStore.Images.Media.DISPLAY_NAME}=?"
+            val selectionArgs = arrayOf(name)
+            context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(MediaStore.Images.Media._ID)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIdx)
+                    val itemUri = ContentUris.withAppendedId(collection, id)
+                    try {
+                        context.contentResolver.openInputStream(itemUri)?.use { }
+                    } catch (_: FileNotFoundException) {
+                        stale.add(itemUri)
+                    } catch (_: SecurityException) {
+                        // Still treat as stale so caller can request delete consent
+                        stale.add(itemUri)
+                    } catch (_: Exception) {
+                        // Ignore other errors
+                    }
+                }
+            }
+        }
+
+        return stale
+    }
+
+    private fun getDisplayName(context: Context, uri: Uri): String? {
+        return try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                    if (nameIndex >= 0) cursor.getString(nameIndex) else null
+                } else null
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 }

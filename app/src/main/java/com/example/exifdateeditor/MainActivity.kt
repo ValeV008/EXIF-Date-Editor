@@ -1,10 +1,6 @@
 package com.example.exifdateeditor
 
-import android.app.Activity
-import android.content.IntentSender
 import android.net.Uri
-import android.os.Build
-import android.provider.MediaStore
 import android.os.Bundle
 import android.widget.Button
 import android.widget.ProgressBar
@@ -49,21 +45,9 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     private lateinit var btnClearSelection: Button
     private lateinit var btnSetExifDate: Button
     private lateinit var btnPngToJpg: Button
+    private lateinit var btnFixGalleryGhosts: Button
     
     private var progressDialog: AlertDialog? = null
-    private var pendingDate: Date? = null
-
-    private val writeAccessLauncher = registerForActivityResult(
-        ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        val date = pendingDate
-        pendingDate = null
-        if (result.resultCode == Activity.RESULT_OK && date != null) {
-            proceedWithBatch(date)
-        } else {
-            Toast.makeText(this, "Write permission not granted", Toast.LENGTH_LONG).show()
-        }
-    }
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,6 +72,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         btnClearSelection = findViewById(R.id.btn_clear_selection)
         btnSetExifDate = findViewById(R.id.btn_set_exif_date)
         btnPngToJpg = findViewById(R.id.btn_png_to_jpg)
+        btnFixGalleryGhosts = findViewById(R.id.btn_fix_gallery_ghosts)
         
         imageAdapter = SelectedImageAdapter(selectedImages, this)
         imageAdapter.onItemRemoved = { updateSelectionCount() }
@@ -121,6 +106,18 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
                 }
                 startPngToJpgConversion(pngUris)
             }
+        }
+
+        btnFixGalleryGhosts.setOnClickListener {
+            if (selectedImages.isEmpty()) return@setOnClickListener
+            AlertDialog.Builder(this)
+                .setTitle("Fix Gallery Ghosts")
+                .setMessage("This removes stale Gallery entries for the selected filenames that no longer exist. It does not delete actual files.")
+                .setPositiveButton("Fix") { _, _ ->
+                    fixGalleryGhosts()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
         }
     }
     
@@ -206,6 +203,68 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     private fun updateSelectionCount() {
         tvSelectedCount.text = "Selected images: ${selectedImages.size}"
         btnSetExifDate.isEnabled = selectedImages.isNotEmpty()
+        btnFixGalleryGhosts.isEnabled = selectedImages.isNotEmpty()
+    }
+
+    private fun fixGalleryGhosts() {
+        val progressView = layoutInflater.inflate(R.layout.dialog_progress, null)
+        val progressBar = progressView.findViewById<ProgressBar>(R.id.progress_bar)
+        val tvProgressText = progressView.findViewById<TextView>(R.id.tv_progress_text)
+        val tvCurrentFile = progressView.findViewById<TextView>(R.id.tv_current_file)
+
+        progressBar.isIndeterminate = true
+        tvProgressText.text = "Scanning..."
+        tvCurrentFile.text = ""
+
+        progressDialog = AlertDialog.Builder(this)
+            .setTitle("Fixing Gallery Ghosts...")
+            .setView(progressView)
+            .setCancelable(false)
+            .show()
+
+        Thread {
+            val staleUris = ExifManager.findStaleMediaEntries(this, selectedImages)
+            if (staleUris.isEmpty()) {
+                runOnUiThread {
+                    progressDialog?.dismiss()
+                    Toast.makeText(this, "No stale Gallery entries found", Toast.LENGTH_LONG).show()
+                }
+                return@Thread
+            }
+
+            var deleted = 0
+            var failed = 0
+            runOnUiThread {
+                progressBar.isIndeterminate = false
+                progressBar.max = staleUris.size
+                progressBar.progress = 0
+            }
+            for (uri in staleUris) {
+                try {
+                    val rows = contentResolver.delete(uri, null, null)
+                    if (rows > 0) deleted++
+                } catch (_: SecurityException) {
+                    failed++
+                } catch (_: Exception) {
+                    failed++
+                }
+                runOnUiThread {
+                    progressBar.progress = deleted + failed
+                    tvProgressText.text = "${progressBar.progress} / ${progressBar.max}"
+                    tvCurrentFile.text = uri.lastPathSegment ?: uri.toString()
+                }
+            }
+
+            runOnUiThread {
+                progressDialog?.dismiss()
+                val msg = if (failed > 0) {
+                    "Deleted $deleted stale entries ($failed failed)"
+                } else {
+                    "Deleted $deleted stale entries"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            }
+        }.start()
     }
     
     private fun showDatePickerDialog() {
@@ -215,22 +274,6 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     }
     
     override fun onDateTimeSelected(date: Date) {
-        // On Android 11+ request user consent to edit media items if needed
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val mediaUris = selectedImages.filter { it.scheme == "content" }
-                if (mediaUris.isNotEmpty()) {
-                    val pi = MediaStore.createWriteRequest(contentResolver, mediaUris)
-                    pendingDate = date
-                    writeAccessLauncher.launch(
-                        androidx.activity.result.IntentSenderRequest.Builder(pi.intentSender).build()
-                    )
-                    return
-                }
-            } catch (_: Exception) {
-                // If building the request fails, just proceed; we'll try writing and handle failures
-            }
-        }
         proceedWithBatch(date)
     }
     
