@@ -32,7 +32,7 @@ class ImagePickerManager(
         val filtered = uris.filter { uri ->
             try {
                 val mimeType = context.contentResolver.getType(uri)
-                matchesMimeTypes(mimeType, accepted)
+                matchesMimeTypes(mimeType, accepted, uri)
             } catch (_: Exception) {
                 false
             }
@@ -111,17 +111,49 @@ class ImagePickerManager(
         }
     }
 
-    private fun matchesMimeTypes(mimeType: String?, accepted: Array<String>): Boolean {
-        if (mimeType.isNullOrEmpty()) return false
+    private fun matchesMimeTypes(mimeType: String?, accepted: Array<String>, uri: Uri): Boolean {
+        if (!mimeType.isNullOrEmpty()) {
+            return accepted.any { pattern ->
+                val p = pattern.lowercase(Locale.ROOT)
+                val m = mimeType.lowercase(Locale.ROOT)
+                if (p.endsWith("/*")) {
+                    // Wildcard major type match, e.g., image/*
+                    val major = p.substringBefore('/')
+                    m.substringBefore('/') == major
+                } else {
+                    m == p
+                }
+            }
+        }
+
+        // Fallback for providers that don't return a MIME type.
+        val name = getImageName(uri)
+        val ext = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        if (ext.isEmpty()) return false
+
+        val imageExts = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "gif", "bmp", "tif", "tiff", "dng")
+        val videoExts = setOf("mp4", "m4v", "mov", "mkv", "avi", "webm", "3gp", "3gpp", "3g2", "ts", "m2ts", "mts")
+
+        fun matchesSubtype(subtype: String): Boolean {
+            return when (subtype) {
+                "jpeg", "jpg" -> ext == "jpg" || ext == "jpeg"
+                "quicktime" -> ext == "mov"
+                else -> ext == subtype
+            }
+        }
+
         return accepted.any { pattern ->
             val p = pattern.lowercase(Locale.ROOT)
-            val m = mimeType.lowercase(Locale.ROOT)
             if (p.endsWith("/*")) {
-                // Wildcard major type match, e.g., image/*
                 val major = p.substringBefore('/')
-                m.substringBefore('/') == major
+                when (major) {
+                    "image" -> ext in imageExts
+                    "video" -> ext in videoExts
+                    else -> false
+                }
             } else {
-                m == p
+                val subtype = p.substringAfter('/', "")
+                matchesSubtype(subtype)
             }
         }
     }

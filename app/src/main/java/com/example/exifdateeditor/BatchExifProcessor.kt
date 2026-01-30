@@ -2,22 +2,25 @@ package com.example.exifdateeditor
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import kotlinx.coroutines.*
 import java.util.*
 
 /**
- * Handles batch EXIF operations on multiple images
+ * Handles batch metadata operations on multiple media items
  */
 class BatchExifProcessor(
     private val context: Context,
     private val uris: List<Uri>
 ) {
+    private val tag = "BatchExifProcessor"
     
     var onProgress: (current: Int, total: Int, fileName: String) -> Unit = { _, _, _ -> }
     var onComplete: (result: BatchOperationResult) -> Unit = {}
+    var onPermissionRequired: (request: WritePermissionRequest) -> Unit = {}
     
     /**
-     * Set EXIF DateTimeOriginal for all images
+     * Set date taken for all media (images and videos)
      * Runs on IO thread to avoid blocking UI
      */
     fun setDateTakenForAll(date: Date) {
@@ -34,17 +37,25 @@ class BatchExifProcessor(
                         onProgress(index + 1, uris.size, fileName)
                     }
                     
-                    // Perform EXIF write
-                    val success = ExifManager.setDateTaken(context, uri, date)
+                    // Perform write for image or video
+                    val success = ExifManager.setDateTakenForMedia(context, uri, date)
                     results.add(fileName to success)
                     
                     if (!success) {
-                        errorMessages[fileName] = "Failed to write EXIF data"
+                        errorMessages[fileName] = "Failed to write metadata"
+                        Log.w(tag, "Failed to write metadata for $fileName ($uri)")
                     }
+                } catch (e: ExifManager.RecoverableWriteException) {
+                    val fileName = getFileName(uri)
+                    withContext(Dispatchers.Main) {
+                        onPermissionRequired(WritePermissionRequest(e.intentSender, uri))
+                    }
+                    return@launch
                 } catch (e: Exception) {
                     val fileName = getFileName(uri)
                     results.add(fileName to false)
                     errorMessages[fileName] = e.message ?: "Unknown error"
+                    Log.w(tag, "Exception writing metadata for $fileName ($uri): ${e.message}")
                 }
             }
             

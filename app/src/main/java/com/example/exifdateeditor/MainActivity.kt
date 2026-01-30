@@ -6,6 +6,7 @@ import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -42,12 +43,30 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     private lateinit var rvSelectedImages: RecyclerView
     private lateinit var btnSelectImages: Button
     private lateinit var btnSelectFolder: Button
+    private lateinit var btnSelectVideos: Button
     private lateinit var btnClearSelection: Button
     private lateinit var btnSetExifDate: Button
     private lateinit var btnPngToJpg: Button
     private lateinit var btnFixGalleryGhosts: Button
     
     private var progressDialog: AlertDialog? = null
+    private var pendingPermissionDate: Date? = null
+    private var pendingPermissionUris: List<Uri>? = null
+
+    private val writePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val date = pendingPermissionDate
+        val uris = pendingPermissionUris
+        pendingPermissionDate = null
+        pendingPermissionUris = null
+
+        if (result.resultCode == RESULT_OK && date != null && uris != null) {
+            proceedWithBatch(date, uris)
+        } else {
+            Toast.makeText(this, "Permission not granted for video update", Toast.LENGTH_LONG).show()
+        }
+    }
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,6 +88,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         rvSelectedImages = findViewById(R.id.rv_selected_images)
         btnSelectImages = findViewById(R.id.btn_select_images)
         btnSelectFolder = findViewById(R.id.btn_select_folder)
+        btnSelectVideos = findViewById(R.id.btn_select_videos)
         btnClearSelection = findViewById(R.id.btn_clear_selection)
         btnSetExifDate = findViewById(R.id.btn_set_exif_date)
         btnPngToJpg = findViewById(R.id.btn_png_to_jpg)
@@ -85,6 +105,16 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         
         btnSelectFolder.setOnClickListener {
             folderPickerManager.pickFolder()
+        }
+
+        btnSelectVideos.setOnClickListener {
+            imagePickerManager.pickMultipleImages(arrayOf("video/*")) { videoUris ->
+                if (videoUris.isEmpty()) {
+                    Toast.makeText(this, "No videos selected", Toast.LENGTH_SHORT).show()
+                    return@pickMultipleImages
+                }
+                onImagesSelected(videoUris)
+            }
         }
         
         btnClearSelection.setOnClickListener {
@@ -277,8 +307,8 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         proceedWithBatch(date)
     }
     
-    private fun proceedWithBatch(date: Date) {
-        val processor = BatchExifProcessor(this, selectedImages.toList())
+    private fun proceedWithBatch(date: Date, uris: List<Uri> = selectedImages.toList()) {
+        val processor = BatchExifProcessor(this, uris)
         
         // Show progress dialog
         val progressView = layoutInflater.inflate(R.layout.dialog_progress, null)
@@ -286,7 +316,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         val tvProgressText = progressView.findViewById<TextView>(R.id.tv_progress_text)
         val tvCurrentFile = progressView.findViewById<TextView>(R.id.tv_current_file)
         
-        progressBar.max = selectedImages.size
+        progressBar.max = uris.size
         
         progressDialog = AlertDialog.Builder(this)
             .setTitle("Setting EXIF Date...")
@@ -304,6 +334,14 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         processor.onComplete = { result ->
             progressDialog?.dismiss()
             showResultDialog(result)
+        }
+
+        processor.onPermissionRequired = { request ->
+            progressDialog?.dismiss()
+            pendingPermissionDate = date
+            pendingPermissionUris = uris
+            val intentRequest = IntentSenderRequest.Builder(request.intentSender).build()
+            writePermissionLauncher.launch(intentRequest)
         }
         
         // Start processing

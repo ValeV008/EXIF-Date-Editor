@@ -5,18 +5,27 @@ import android.content.ContentValues
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.provider.DocumentsContract
 import android.media.MediaScannerConnection
 import android.content.ContentUris
+import android.os.Build
 import java.io.FileNotFoundException
 import androidx.exifinterface.media.ExifInterface
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
 import android.util.Log
+import android.app.RecoverableSecurityException
+import com.coremedia.iso.IsoFile
+import com.coremedia.iso.boxes.MovieHeaderBox
+import com.coremedia.iso.boxes.TrackHeaderBox
+import com.coremedia.iso.boxes.MediaHeaderBox
+import com.googlecode.mp4parser.util.Path
 
 /**
- * Manages EXIF data reading and writing for images
+ * Manages EXIF/media metadata reading and writing
  */
 object ExifManager {
     
@@ -54,7 +63,7 @@ object ExifManager {
      * Returns "Not set" if no date is available
      */
     fun getDateTakenFormatted(context: Context, imageUri: Uri): String {
-        val date = getDateTaken(context, imageUri)
+        val date = getMediaDateTaken(context, imageUri)
         return if (date != null) {
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(date)
         } else {
@@ -203,6 +212,362 @@ object ExifManager {
         }
     }
 
+    private fun notifyMediaStoreWithDate(context: Context, mediaUri: Uri, date: Date) {
+        try {
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DATE_MODIFIED, date.time / 1000)
+                put(MediaStore.MediaColumns.DATE_TAKEN, date.time)
+            }
+            context.contentResolver.update(mediaUri, contentValues, null, null)
+            context.contentResolver.notifyChange(mediaUri, null)
+            val scanPath = getFilePathFromUri(context, mediaUri)
+            if (scanPath != null) {
+                MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(scanPath),
+                    null
+                ) { _, _ -> }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to notify MediaStore for media: ${e.message}")
+        }
+    }
+
+    /**
+     * Set date taken for media. Images update EXIF + MediaStore, videos update MediaStore timestamps.
+     */
+    fun setDateTakenForMedia(context: Context, mediaUri: Uri, date: Date): Boolean {
+        val mimeType = try { context.contentResolver.getType(mediaUri) } catch (_: Exception) { null }
+        return if (mimeType != null && mimeType.startsWith("video/")) {
+            setVideoDateTaken(context, mediaUri, date)
+        } else {
+            setDateTaken(context, mediaUri, date)
+        }
+    }
+
+    private fun setVideoDateTaken(context: Context, videoUri: Uri, date: Date): Boolean {
+        return try {
+            val targetUri = resolveVideoMediaStoreUri(context, videoUri)
+            if (targetUri == null) {
+                Log.w(TAG, "Video update skipped: could not resolve MediaStore URI for $videoUri")
+                return false
+            }
+            Log.d(TAG, "Resolved video MediaStore URI: $targetUri")
+            updateFileModificationDate(context, targetUri, date)
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DATE_MODIFIED, date.time / 1000)
+                put(MediaStore.Video.Media.DATE_TAKEN, date.time)
+            }
+            val updated = context.contentResolver.update(targetUri, values, null, null)
+            Log.d(TAG, "Updated video rows: $updated for $targetUri")
+            notifyMediaStoreWithDate(context, targetUri, date)
+            if (updated > 0) {
+                true
+            } else {
+                val mp4Updated = tryUpdateMp4Metadata(context, videoUri, date)
+                if (mp4Updated) {
+                    val scanPath = getFilePathFromUri(context, targetUri) ?: getFilePathFromUri(context, videoUri)
+                    if (scanPath != null) {
+                        MediaScannerConnection.scanFile(context, arrayOf(scanPath), null) { _, _ -> }
+                    }
+                }
+                mp4Updated
+            }
+        } catch (e: RecoverableSecurityException) {
+            val intentSender = e.userAction.actionIntent.intentSender
+            throw RecoverableWriteException(intentSender, videoUri)
+        } catch (e: UnsupportedOperationException) {
+            Log.w(TAG, "Video provider does not support update: ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update video timestamps: ${e.message}")
+            false
+        }
+    }
+
+    private fun tryUpdateMp4Metadata(context: Context, videoUri: Uri, date: Date): Boolean {
+        // Update MP4 creation/modification time so MediaStore can reindex DATE_TAKEN.
+        return try {
+            val tempIn = File.createTempFile("video_in", ".mp4", context.cacheDir)
+            val tempOut = File.createTempFile("video_out", ".mp4", context.cacheDir)
+
+            context.contentResolver.openInputStream(videoUri)?.use { input ->
+                tempIn.outputStream().use { output -> input.copyTo(output) }
+            } ?: return false
+
+            val isoFile = IsoFile(tempIn.absolutePath)
+            try {
+                val mvhd = Path.getPath(isoFile, "moov/mvhd") as? MovieHeaderBox
+                mvhd?.setCreationTime(date)
+                mvhd?.setModificationTime(date)
+
+                val tkhdBoxes: List<TrackHeaderBox> = Path.getPaths(isoFile, "moov/trak/tkhd")
+                for (tkhd in tkhdBoxes) {
+                    tkhd.setCreationTime(date)
+                    tkhd.setModificationTime(date)
+                }
+
+                val mdhdBoxes: List<MediaHeaderBox> = Path.getPaths(isoFile, "moov/trak/mdia/mdhd")
+                for (mdhd in mdhdBoxes) {
+                    mdhd.setCreationTime(date)
+                    mdhd.setModificationTime(date)
+                }
+
+                FileOutputStream(tempOut).channel.use { channel ->
+                    isoFile.getBox(channel)
+                }
+            } finally {
+                isoFile.close()
+            }
+
+            context.contentResolver.openOutputStream(videoUri, "rwt")?.use { output ->
+                tempOut.inputStream().use { input -> input.copyTo(output) }
+            } ?: return false
+
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update MP4 metadata: ${e.message}")
+            false
+        }
+    }
+
+    class RecoverableWriteException(
+        val intentSender: android.content.IntentSender,
+        val uri: Uri
+    ) : Exception("Recoverable write permission required for $uri")
+
+    private fun resolveVideoMediaStoreUri(context: Context, videoUri: Uri): Uri? {
+        if (videoUri.scheme != "content") return null
+        if (videoUri.authority == MediaStore.AUTHORITY) return videoUri
+        var volumeName: String? = null
+        var name: String? = null
+        var relDir: String? = null
+        var pathPart: String? = null
+
+        var treePathPart: String? = null
+        if (DocumentsContract.isDocumentUri(context, videoUri)) {
+            val docId = try { DocumentsContract.getDocumentId(videoUri) } catch (_: Exception) { null }
+            if (!docId.isNullOrEmpty()) {
+                val parts = docId.split(":")
+                if (parts.size == 2) {
+                    volumeName = parts[0]
+                    pathPart = parts[1]
+                    name = pathPart.substringAfterLast('/', pathPart)
+                    relDir = pathPart.substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
+                }
+            }
+        }
+        if (pathPart.isNullOrEmpty()) {
+            val treeId = try { DocumentsContract.getTreeDocumentId(videoUri) } catch (_: Exception) { null }
+            if (!treeId.isNullOrEmpty()) {
+                val parts = treeId.split(":")
+                if (parts.size == 2) {
+                    volumeName = volumeName ?: parts[0]
+                    treePathPart = parts[1]
+                }
+            }
+        }
+
+        // Fallback: try display name from the URI if available
+        if (name.isNullOrEmpty()) {
+            name = getDisplayName(context, videoUri)
+        }
+
+        if (name.isNullOrEmpty()) {
+            Log.w(TAG, "resolveVideoMediaStoreUri: missing display name for $videoUri")
+            return null
+        }
+
+        val volume = when {
+            volumeName.isNullOrEmpty() -> MediaStore.VOLUME_EXTERNAL
+            volumeName.equals("primary", true) -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    MediaStore.VOLUME_EXTERNAL_PRIMARY
+                } else {
+                    MediaStore.VOLUME_EXTERNAL
+                }
+            }
+            else -> volumeName
+        }
+        Log.d(TAG, "resolveVideoMediaStoreUri: name=$name relDir=$relDir volume=$volume for $videoUri")
+
+        val dataPath = buildDataPath(volumeName, pathPart ?: treePathPart)
+        val volumesToTry = LinkedHashSet<String>().apply {
+            add(volume)
+            add(MediaStore.VOLUME_EXTERNAL)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                add(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            }
+            if (!volumeName.isNullOrEmpty() && !volumeName.equals("primary", true)) {
+                add(volumeName!!)
+            }
+        }.toList()
+
+        for (vol in volumesToTry) {
+            val resolved = queryVideoByNameOrPath(context, vol, name, relDir, dataPath)
+            if (resolved != null) return resolved
+        }
+
+        return null
+    }
+
+    private fun buildDataPath(volumeName: String?, pathPart: String?): String? {
+        if (pathPart.isNullOrEmpty()) return null
+        return if (volumeName.isNullOrEmpty() || volumeName.equals("primary", true)) {
+            "/storage/emulated/0/$pathPart"
+        } else {
+            "/storage/$volumeName/$pathPart"
+        }
+    }
+
+    private fun queryVideoByNameOrPath(
+        context: Context,
+        volume: String,
+        name: String,
+        relDir: String?,
+        dataPath: String?
+    ): Uri? {
+        val projection = arrayOf(MediaStore.MediaColumns._ID)
+        val videoCollection = try {
+            MediaStore.Video.Media.getContentUri(volume)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Invalid MediaStore volume: $volume")
+            return null
+        }
+        val filesCollection = try {
+            MediaStore.Files.getContentUri(volume)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Invalid MediaStore volume for files: $volume")
+            return null
+        }
+
+        if (!relDir.isNullOrEmpty()) {
+            val selection = "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?"
+            val selectionArgs = arrayOf(name, relDir)
+            try {
+                context.contentResolver.query(videoCollection, projection, selection, selectionArgs, null)
+            } catch (_: IllegalArgumentException) {
+                null
+            }?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                if (cursor.moveToFirst() && idIdx >= 0) {
+                    val id = cursor.getLong(idIdx)
+                    return ContentUris.withAppendedId(videoCollection, id)
+                }
+            }
+        }
+
+        if (!dataPath.isNullOrEmpty()) {
+            val selection = "${MediaStore.MediaColumns.DATA}=?"
+            val selectionArgs = arrayOf(dataPath)
+            try {
+                context.contentResolver.query(videoCollection, projection, selection, selectionArgs, null)
+            } catch (_: IllegalArgumentException) {
+                null
+            }?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                if (cursor.moveToFirst() && idIdx >= 0) {
+                    val id = cursor.getLong(idIdx)
+                    return ContentUris.withAppendedId(videoCollection, id)
+                }
+            }
+        }
+
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME}=?"
+        val selectionArgs = arrayOf(name)
+        try {
+            context.contentResolver.query(videoCollection, projection, selection, selectionArgs, null)
+        } catch (_: IllegalArgumentException) {
+            null
+        }?.use { cursor ->
+            val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+            if (cursor.moveToFirst() && idIdx >= 0) {
+                val id = cursor.getLong(idIdx)
+                if (!cursor.moveToNext()) {
+                    return ContentUris.withAppendedId(videoCollection, id)
+                }
+            }
+        }
+
+        // Files collection fallback if Video collection doesn't match
+        if (!relDir.isNullOrEmpty()) {
+            val filesSelection = "${MediaStore.Files.FileColumns.MEDIA_TYPE}=? AND ${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?"
+            val filesSelectionArgs = arrayOf(
+                MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString(),
+                name,
+                relDir
+            )
+            try {
+                context.contentResolver.query(filesCollection, projection, filesSelection, filesSelectionArgs, null)
+            } catch (_: IllegalArgumentException) {
+                null
+            }?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                if (cursor.moveToFirst() && idIdx >= 0) {
+                    val id = cursor.getLong(idIdx)
+                    return ContentUris.withAppendedId(videoCollection, id)
+                }
+            }
+        }
+
+        if (!dataPath.isNullOrEmpty()) {
+            val filesSelection = "${MediaStore.MediaColumns.DATA}=?"
+            val filesSelectionArgs = arrayOf(dataPath)
+            try {
+                context.contentResolver.query(filesCollection, projection, filesSelection, filesSelectionArgs, null)
+            } catch (_: IllegalArgumentException) {
+                null
+            }?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                if (cursor.moveToFirst() && idIdx >= 0) {
+                    val id = cursor.getLong(idIdx)
+                    return ContentUris.withAppendedId(videoCollection, id)
+                }
+            }
+        }
+
+        val filesSelection = "${MediaStore.Files.FileColumns.MEDIA_TYPE}=? AND ${MediaStore.MediaColumns.DISPLAY_NAME}=?"
+        val filesSelectionArgs = arrayOf(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString(), name)
+        try {
+            context.contentResolver.query(filesCollection, projection, filesSelection, filesSelectionArgs, null)
+        } catch (_: IllegalArgumentException) {
+            null
+        }?.use { cursor ->
+            val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+            if (cursor.moveToFirst() && idIdx >= 0) {
+                val id = cursor.getLong(idIdx)
+                if (!cursor.moveToNext()) {
+                    return ContentUris.withAppendedId(videoCollection, id)
+                }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Get date taken for any media (image/video).
+     * For images, prefer EXIF. Otherwise fall back to MediaStore DATE_TAKEN.
+     */
+    fun getMediaDateTaken(context: Context, mediaUri: Uri): Date? {
+        val exifDate = getDateTaken(context, mediaUri)
+        if (exifDate != null) return exifDate
+        return try {
+            val projection = arrayOf(MediaStore.MediaColumns.DATE_TAKEN)
+            context.contentResolver.query(mediaUri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_TAKEN)
+                    if (idx >= 0) {
+                        val millis = cursor.getLong(idx)
+                        if (millis > 0) Date(millis) else null
+                    } else null
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Get the actual file path from a URI when possible
      */
@@ -263,7 +628,7 @@ object ExifManager {
     }
 
     /**
-     * Find MediaStore image entries for the selected filenames that no longer resolve to a file.
+     * Find MediaStore entries for the selected filenames that no longer resolve to a file.
      * Returns a list of stale MediaStore item URIs.
      */
     fun findStaleMediaEntries(context: Context, imageUris: List<Uri>): List<Uri> {
@@ -271,29 +636,33 @@ object ExifManager {
         if (displayNames.isEmpty()) return emptyList()
 
         val stale = mutableListOf<Uri>()
-        val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        val collections = listOf(
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL),
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        )
         val projection = arrayOf(
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME
         )
 
-        for (name in displayNames) {
-            val selection = "${MediaStore.Images.Media.DISPLAY_NAME}=?"
-            val selectionArgs = arrayOf(name)
-            context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
-                val idIdx = cursor.getColumnIndex(MediaStore.Images.Media._ID)
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idIdx)
-                    val itemUri = ContentUris.withAppendedId(collection, id)
-                    try {
-                        context.contentResolver.openInputStream(itemUri)?.use { }
-                    } catch (_: FileNotFoundException) {
-                        stale.add(itemUri)
-                    } catch (_: SecurityException) {
-                        // Still treat as stale so caller can request delete consent
-                        stale.add(itemUri)
-                    } catch (_: Exception) {
-                        // Ignore other errors
+        for (collection in collections) {
+            for (name in displayNames) {
+                val selection = "${MediaStore.MediaColumns.DISPLAY_NAME}=?"
+                val selectionArgs = arrayOf(name)
+                context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                    val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(idIdx)
+                        val itemUri = ContentUris.withAppendedId(collection, id)
+                        try {
+                            context.contentResolver.openInputStream(itemUri)?.use { }
+                        } catch (_: FileNotFoundException) {
+                            stale.add(itemUri)
+                        } catch (_: SecurityException) {
+                            stale.add(itemUri)
+                        } catch (_: Exception) {
+                            // Ignore other errors
+                        }
                     }
                 }
             }
