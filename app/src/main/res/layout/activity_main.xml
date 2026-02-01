@@ -5,26 +5,20 @@
     android:orientation="vertical"
     android:padding="16dp">
 
-    <LinearLayout
+    <ImageView
+        android:id="@+id/iv_logo"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:layout_marginBottom="12dp"
+        android:contentDescription="App logo"
+        android:scaleType="centerInside"
+        android:src="@drawable/header_logo" />
+
+    <Button
+        android:id="@+id/btn_select_images"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/btn_select_images"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Select Images" />
-
-        <Button
-            android:id="@+id/btn_select_folder"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Select Folder" />
-
-    </LinearLayout>
+        android:text="Select Images" />
 
     <Button
         android:id="@+id/btn_select_videos"

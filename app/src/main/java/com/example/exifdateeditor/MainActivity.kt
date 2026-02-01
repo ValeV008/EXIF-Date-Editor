@@ -17,7 +17,6 @@ import java.util.*
 class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSelectedListener {
     
     private lateinit var imagePickerManager: ImagePickerManager
-    private lateinit var folderPickerManager: FolderPickerManager
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -42,7 +41,6 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
     private lateinit var tvSelectedCount: TextView
     private lateinit var rvSelectedImages: RecyclerView
     private lateinit var btnSelectImages: Button
-    private lateinit var btnSelectFolder: Button
     private lateinit var btnSelectVideos: Button
     private lateinit var btnClearSelection: Button
     private lateinit var btnSetExifDate: Button
@@ -67,6 +65,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
             Toast.makeText(this, "Permission not granted for video update", Toast.LENGTH_LONG).show()
         }
     }
+
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,8 +75,6 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         imagePickerManager = ImagePickerManager(this, activityResultRegistry, this)
         imagePickerManager.onImagesSelected = ::onImagesSelected
         
-        folderPickerManager = FolderPickerManager(this, activityResultRegistry, this)
-        folderPickerManager.onImagesFound = ::onImagesSelected
         
         // Request permissions on app start
         requestStoragePermissions()
@@ -87,7 +84,6 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         tvSelectedCount = findViewById(R.id.tv_selected_count)
         rvSelectedImages = findViewById(R.id.rv_selected_images)
         btnSelectImages = findViewById(R.id.btn_select_images)
-        btnSelectFolder = findViewById(R.id.btn_select_folder)
         btnSelectVideos = findViewById(R.id.btn_select_videos)
         btnClearSelection = findViewById(R.id.btn_clear_selection)
         btnSetExifDate = findViewById(R.id.btn_set_exif_date)
@@ -103,9 +99,6 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
             imagePickerManager.pickMultipleImages()
         }
         
-        btnSelectFolder.setOnClickListener {
-            folderPickerManager.pickFolder()
-        }
 
         btnSelectVideos.setOnClickListener {
             imagePickerManager.pickMultipleImages(arrayOf("video/*")) { videoUris ->
@@ -116,6 +109,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
                 onImagesSelected(videoUris)
             }
         }
+
         
         btnClearSelection.setOnClickListener {
             selectedImages.clear()
@@ -347,6 +341,7 @@ class MainActivity : AppCompatActivity(), DatePickerDialogFragment.OnDateTimeSel
         // Start processing
         processor.setDateTakenForAll(date)
     }
+
     
     private fun showResultDialog(result: BatchOperationResult) {
         val resultView = layoutInflater.inflate(R.layout.dialog_result, null)
